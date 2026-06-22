@@ -81,9 +81,16 @@ class TwitterClientWrapper:
             logger.info("✅ Successfully liked tweet %s", tweet_id)
             return True, "Liked"
         except Exception as exc:
-            msg = f"Failed to like tweet: {exc}"
-            logger.error(msg)
-            return False, msg
+            logger.warning("Failed to like tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+            try:
+                self.client.client_transaction.home_page_response = None
+                await self.client.favorite_tweet(tweet_id)
+                logger.info("✅ Successfully liked tweet %s after transaction reset", tweet_id)
+                return True, "Liked"
+            except Exception as retry_exc:
+                msg = f"Failed to like tweet: {retry_exc}"
+                logger.error(msg)
+                return False, msg
 
     async def bookmark_tweet(self, tweet_id: str) -> Tuple[bool, str]:
         """Bookmarks a tweet by ID. Returns (success, message)."""
@@ -98,9 +105,16 @@ class TwitterClientWrapper:
             logger.info("✅ Successfully bookmarked tweet %s", tweet_id)
             return True, "Bookmarked"
         except Exception as exc:
-            msg = f"Failed to bookmark tweet: {exc}"
-            logger.error(msg)
-            return False, msg
+            logger.warning("Failed to bookmark tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+            try:
+                self.client.client_transaction.home_page_response = None
+                await self.client.bookmark_tweet(tweet_id)
+                logger.info("✅ Successfully bookmarked tweet %s after transaction reset", tweet_id)
+                return True, "Bookmarked"
+            except Exception as retry_exc:
+                msg = f"Failed to bookmark tweet: {retry_exc}"
+                logger.error(msg)
+                return False, msg
 
     async def reply_tweet(self, tweet_id: str, text: str) -> Tuple[bool, str]:
         """Replies to a tweet with comment text. Returns (success, message)."""
@@ -116,9 +130,16 @@ class TwitterClientWrapper:
             logger.info("✅ Successfully replied to tweet %s", tweet_id)
             return True, "Replied"
         except Exception as exc:
-            msg = f"Failed to reply to tweet: {exc}"
-            logger.error(msg)
-            return False, msg
+            logger.warning("Failed to reply to tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+            try:
+                self.client.client_transaction.home_page_response = None
+                await self.client.create_tweet(text=text, reply_to=tweet_id)
+                logger.info("✅ Successfully replied to tweet %s after transaction reset", tweet_id)
+                return True, "Replied"
+            except Exception as retry_exc:
+                msg = f"Failed to reply to tweet: {retry_exc}"
+                logger.error(msg)
+                return False, msg
 
 
 # Singleton instance

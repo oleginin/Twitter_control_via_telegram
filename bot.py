@@ -38,6 +38,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TwitterBot")
 
+# Silence noisy HTTP requests logs (like getUpdates) from httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 # In-memory store for generated replies
 # Key: draft_message_id (int), Value: dict {"tweet_id": str, "text": str}
@@ -323,7 +326,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # Save draft in memory
             REPLY_DRAFTS[draft_msg.message_id] = {
                 "tweet_id": tweet_id,
-                "text": reply_text
+                "text": reply_text,
+                "tweet_text": tweet_text
             }
             
             keyboard = InlineKeyboardMarkup([
@@ -410,10 +414,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ])
         await query.message.edit_reply_markup(reply_markup=loading_keyboard)
         
-        parent_msg = query.message.reply_to_message
-        if parent_msg and parent_msg.text:
-            tweet_text = extract_tweet_text_from_message(parent_msg.text)
-        else:
+        tweet_text = draft.get("tweet_text")
+        if not tweet_text:
+            # Fallback to reply_to_message in case of older drafts or memory reset
+            parent_msg = query.message.reply_to_message
+            if parent_msg and parent_msg.text:
+                tweet_text = extract_tweet_text_from_message(parent_msg.text)
+                draft["tweet_text"] = tweet_text
+                
+        if not tweet_text:
             # Restore draft keyboard on failure
             restore_keyboard = InlineKeyboardMarkup([
                 [
