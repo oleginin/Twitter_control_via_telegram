@@ -6,15 +6,20 @@ An advanced, asynchronous Python bot that monitors specified Twitter/X accounts 
 
 ## Key Features
 
-1. **Multi-Profile Monitoring** — Tracks multiple Twitter/X accounts configured via comma-separated list.
-2. **Interactive Inline Keyboard** — Control panel under each notification message:
-   - ❤️ **Like** (Favorites the post on X)
-   - 🔖 **Bookmark** (Bookmarks the post on X)
-   - 💬 **Reply** (Drafts an AI-generated reply using Gemini, allowing you to edit/regenerate/cancel before posting)
-3. **Google Gemini AI Integration** — Generates tweet replies using Google Gemini 2.5 Flash. Styling rules are dynamically read from `reply_settings.md` (no restart needed).
-4. **First-Run Flood Protection** — When a new user is added or on first launch, the bot sends only the single latest tweet to prevent chat flooding.
-5. **No Paid X API Needed** — Utilizes browser session cookies (`auth_token` and `ct0`) and standard HTTP/S proxy configuration to interact with X.com.
-6. **Automatic Patching** — Includes a `patch_twikit.py` script to patch local library issues (KeyError urls, JS transaction extraction) during deployment.
+1. **Flexible Profile Management** — Tracks multiple Twitter/X accounts configured via `twitter_usernames.txt` or directly via Telegram.
+2. **Interactive Telegram Control Panel** — Rich control options under each tweet notification message:
+   - ❤️ **Like** (Favorites the post on X.com)
+   - 🔖 **Bookmark** (Bookmarks the post on X.com)
+   - 💬 **Reply** (Drafts an AI reply using Gemini, with buttons to send/regenerate/cancel)
+3. **Interactive Account Administration** — Manage the list of monitored accounts directly in Telegram:
+   - Command `/users` displays a beautiful inline list with **➕ Add Account** and **🗑️ Delete Account** buttons.
+   - Fast commands: `/add <username>` and `/del <username>`.
+4. **Staggered Parsing (Staggering)** — The accounts list is dynamically divided into `NUM_BATCHES` (default: 2) and checks are spread out evenly over the `CHECK_INTERVAL_MINUTES` to avoid X/Nitter rate limiting.
+5. **Daily Log Rotation** — Automatically closes and clears/truncates `bot.log` and other log files once a day at midnight to conserve server storage space.
+6. **Google Gemini AI Integration** — Generates tweet replies using Gemini 2.5 Flash with custom styling instructions loaded dynamically from `reply_settings.md` (no restarts needed).
+7. **First-Run Flood Protection** — When a new user is added or on startup, the bot sends only the single latest tweet to prevent spamming the chat.
+8. **No Paid X API Needed** — Uses browser session cookies (`auth_token` and `ct0`) and standard HTTP/S proxy configuration to interact with X.com.
+9. **Automatic Patching** — Built-in `patch_twikit.py` script automatically fixes upstream `twikit` issues.
 
 ---
 
@@ -58,16 +63,17 @@ nano .env
 
 | Variable | Description |
 |----------|-------------|
-| `TWITTER_USERNAMES` | Comma-separated list of accounts to monitor (e.g. `0leshkoo,elonmusk`) |
+| `TWITTER_USERNAMES` | Comma-separated list of accounts (legacy fallback; preferred way is `twitter_usernames.txt` or Telegram interface) |
 | `TWITTER_COOKIE_AUTH_TOKEN` | Your account session `auth_token` cookie from x.com |
 | `TWITTER_COOKIE_CT0` | Your account session `ct0` cookie from x.com |
 | `TWITTER_PROXY` | Proxy URL for X.com actions (e.g., `http://user:pass@ip:port`) |
 | `GEMINI_API_KEY` | Free API key from [Google AI Studio](https://aistudio.google.com/) |
 | `TELEGRAM_BOT_TOKEN` | Token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Telegram chat or channel ID to send updates |
-| `CHECK_INTERVAL_MINUTES` | Frequency of checks (default: `5` minutes) |
+| `CHECK_INTERVAL_MINUTES` | Frequency of a full loop check across all accounts (default: `5` minutes) |
+| `NUM_BATCHES` | Number of parts to split the accounts list into (default: `2`) |
 
-> **To obtain X cookies**: Log into x.com in your browser, press F12, go to Application (Chrome) or Storage (Firefox) -> Cookies -> `https://x.com` and copy the values for `auth_token` and `ct0`.
+> **Note**: Usernames are stored and managed in the `twitter_usernames.txt` file which is created dynamically at the first start of the bot.
 
 ---
 
@@ -86,6 +92,15 @@ python bot.py --test
 # List available chat IDs (send /start to the bot in Telegram first)
 python bot.py --get-chat-id
 ```
+
+---
+
+## Telegram Bot Commands
+
+Authorized user (`TELEGRAM_CHAT_ID`) can use the following commands in the chat:
+* `/users` — Open interactive menu to view accounts list, add new ones, or delete existing ones.
+* `/add <username1, username2>` — Quickly add new Twitter account(s) to the monitor list.
+* `/del <username>` — Quickly remove a Twitter account from the monitor list.
 
 ---
 
