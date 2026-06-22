@@ -1,0 +1,16 @@
+# Twitter → Telegram Bot — Dependencies
+
+# HTTP Requests
+requests==2.32.3
+
+# RSS Feed Parsing
+feedparser==6.0.11
+
+# Telegram Bot API (async)
+python-telegram-bot==21.6
+
+# Load .env variables
+python-dotenv==1.0.1
+
+# Unofficial Twitter API Client
+twikit==2.3.3
