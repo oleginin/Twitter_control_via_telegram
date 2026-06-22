@@ -11,14 +11,16 @@ import asyncio
 import logging
 import signal
 import sys
+import math
+import datetime
 from datetime import timezone
 from html import escape as html_escape
-
+from pathlib import Path
 
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, ContextTypes, CommandHandler, MessageHandler, filters
 
 import config
 from rss_parser import Tweet, fetch_tweets
@@ -40,6 +42,130 @@ logger = logging.getLogger("TwitterBot")
 
 # Silence noisy HTTP requests logs (like getUpdates) from httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+# ── Usernames File Management ──────────────────────────────────────────────────
+USERNAMES_FILE = Path(__file__).parent / "twitter_usernames.txt"
+
+def load_usernames() -> list[str]:
+    """Loads usernames from the text file. Falls back to config.TWITTER_USERNAMES if file is empty or missing."""
+    if not USERNAMES_FILE.exists():
+        # Initialize file with default list from config/env
+        default_users = getattr(config, "TWITTER_USERNAMES", [])
+        try:
+            USERNAMES_FILE.write_text("\n".join(default_users), encoding="utf-8")
+            logger.info("Created usernames file with %d default users: %s", len(default_users), USERNAMES_FILE)
+        except Exception as e:
+            logger.error("Failed to create %s: %s", USERNAMES_FILE, e)
+        return default_users
+
+    try:
+        content = USERNAMES_FILE.read_text(encoding="utf-8")
+        usernames = []
+        for line in content.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                username = line.lstrip("@").strip()
+                if username:
+                    usernames.append(username)
+        
+        # If file is empty, fallback to config
+        if not usernames:
+            default_users = getattr(config, "TWITTER_USERNAMES", [])
+            return default_users
+            
+        return usernames
+    except Exception as e:
+        logger.error("Failed to read usernames from %s: %s", USERNAMES_FILE, e)
+        return getattr(config, "TWITTER_USERNAMES", [])
+
+def save_usernames(usernames: list[str]) -> bool:
+    """Saves the list of usernames to the text file."""
+    try:
+        USERNAMES_FILE.write_text("\n".join(usernames), encoding="utf-8")
+        logger.info("Saved %d usernames to %s", len(usernames), USERNAMES_FILE)
+        return True
+    except Exception as e:
+        logger.error("Failed to save usernames to %s: %s", USERNAMES_FILE, e)
+        return False
+
+
+# ── Batch Management ─────────────────────────────────────────────────────────
+class UserBatchManager:
+    def __init__(self, num_batches: int = 2):
+        self.num_batches = num_batches
+        self.current_index = 0
+
+    def get_next_batch(self, usernames: list[str]) -> list[str]:
+        if not usernames:
+            return []
+        
+        # If index is out of bounds or at the start of a cycle
+        if self.current_index >= len(usernames):
+            self.current_index = 0
+            
+        n = len(usernames)
+        effective_batches = min(self.num_batches, n) if n > 0 else 1
+        batch_size = math.ceil(n / effective_batches)
+        
+        start = self.current_index
+        end = start + batch_size
+        
+        batch = usernames[start:end]
+        self.current_index = end
+        
+        # If we reached or exceeded the end of list, reset index for next call
+        if self.current_index >= len(usernames):
+            self.current_index = 0
+            
+        return batch
+
+    def calculate_sleep_interval(self, total_usernames: int, check_interval_minutes: float) -> float:
+        """
+        Calculates the sleep interval between batches (in seconds)
+        so that all accounts are checked once every check_interval_minutes.
+        """
+        if total_usernames <= 0:
+            return check_interval_minutes * 60
+            
+        effective_batches = min(self.num_batches, total_usernames)
+        return (check_interval_minutes * 60) / effective_batches
+
+batch_manager = UserBatchManager(num_batches=config.NUM_BATCHES)
+
+
+# ── Daily Cleanup Task ────────────────────────────────────────────────────────
+async def daily_cleanup_task() -> None:
+    """Background task to delete/truncate log files once a day (when the date changes)."""
+    last_cleanup_date = datetime.date.today()
+    while True:
+        # Check every 30 minutes
+        await asyncio.sleep(1800)
+        
+        current_date = datetime.date.today()
+        if current_date != last_cleanup_date:
+            logger.info("🧹 Starting daily log cleanup (date changed from %s to %s)...", last_cleanup_date, current_date)
+            try:
+                for handler in logging.getLogger().handlers + logger.handlers:
+                    if isinstance(handler, logging.FileHandler):
+                        handler.close()
+                
+                log_dir = Path(__file__).parent
+                for file in log_dir.glob("*.log"):
+                    try:
+                        file.write_text("", encoding="utf-8")
+                        logger.info("Truncated log file: %s", file.name)
+                    except Exception as e:
+                        logger.error("Failed to truncate %s: %s", file.name, e)
+                
+                for handler in logging.getLogger().handlers + logger.handlers:
+                    if isinstance(handler, logging.FileHandler):
+                        handler.stream = handler._open()
+                
+                last_cleanup_date = current_date
+                logger.info("✅ Daily log cleanup completed successfully")
+            except Exception as exc:
+                logger.error("❌ Error during daily log cleanup: %s", exc)
 
 
 # In-memory store for generated replies
@@ -106,14 +232,14 @@ async def send_tweet_notification(bot: Bot, tweet: Tweet) -> bool:
 
 
 # ── Monitoring loop ───────────────────────────────────────────────────────────
-async def check_new_tweets(bot: Bot, seen_ids: set[str]) -> set[str]:
+async def check_new_tweets(bot: Bot, seen_ids: set[str], usernames: list[str]) -> set[str]:
     """
-    Fetches RSS feeds for all monitored accounts, finds new tweets, and sends them.
+    Fetches RSS feeds for all monitored accounts in the batch, finds new tweets, and sends them.
     Returns updated seen_ids set.
     """
     updated_seen = seen_ids.copy()
 
-    for username in config.TWITTER_USERNAMES:
+    for username in usernames:
         logger.debug("Checking tweets for @%s...", username)
         tweets = fetch_tweets(
             username=username,
@@ -259,6 +385,228 @@ def get_friendly_error_message(raw_error: str) -> str:
     return f"❌ Twitter Error:\n{clean_err}"
 
 
+# ── Interactive Account Management ───────────────────────────────────────────
+
+def process_add_usernames(raw_input: str) -> tuple[list[str], list[str]]:
+    """Helper to process a raw string of comma-separated usernames, saving new ones."""
+    usernames = load_usernames()
+    added = []
+    skipped = []
+    
+    # Split by comma or whitespace/newlines
+    parts = raw_input.replace("\n", ",").split(",")
+    for part in parts:
+        u = part.strip().lstrip("@").strip()
+        if u:
+            if u not in usernames:
+                usernames.append(u)
+                added.append(u)
+            else:
+                skipped.append(u)
+                
+    if added:
+        save_usernames(usernames)
+        
+    return added, skipped
+
+
+async def show_users_menu(message, edit: bool = False) -> None:
+    """Shows the main user management menu."""
+    usernames = load_usernames()
+    
+    # Format list
+    if usernames:
+        users_list_str = "\n".join(f"{i+1}. 👤 <b>@{html_escape(u)}</b>" for i, u in enumerate(usernames))
+    else:
+        users_list_str = "<i>No accounts are currently being monitored.</i>"
+        
+    n = len(usernames)
+    effective_batches = min(config.NUM_BATCHES, n) if n > 0 else 1
+    batch_size = math.ceil(n / effective_batches)
+    
+    text = (
+        "👥 <b>Monitored Twitter Accounts</b>\n"
+        f"Total accounts: {n}\n\n"
+        f"{users_list_str}\n\n"
+        f"ℹ️ <i>Checks are staggered. The list is split into <b>{config.NUM_BATCHES}</b> parts. "
+        f"A batch of ~<b>{batch_size}</b> account(s) is checked every cycle.</i>"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ Add Account", callback_data="manage:add_prompt"),
+            InlineKeyboardButton("🗑️ Delete Account", callback_data="manage:delete_list")
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh List", callback_data="manage:list")
+        ]
+    ])
+    
+    try:
+        if edit:
+            await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        else:
+            await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except Exception as e:
+        logger.warning("Failed to show/edit users menu: %s", e)
+
+
+async def show_delete_menu(message) -> None:
+    """Shows the delete account selection menu."""
+    usernames = load_usernames()
+    if not usernames:
+        text = "⚠️ <b>No accounts to delete!</b>"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="manage:list")]
+        ])
+        await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        return
+
+    text = "🗑️ <b>Select an account to remove from monitoring:</b>"
+    
+    # Build a grid of delete buttons
+    keyboard_buttons = []
+    # 2 buttons per row
+    row = []
+    for u in usernames:
+        row.append(InlineKeyboardButton(f"❌ @{u}", callback_data=f"manage:delete_confirm:{u}"))
+        if len(row) == 2:
+            keyboard_buttons.append(row)
+            row = []
+    if row:
+        keyboard_buttons.append(row)
+        
+    # Add back button
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="manage:list")])
+    
+    await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard_buttons))
+
+
+async def handle_manage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: str) -> None:
+    """Handles callback interactions for account management."""
+    query = update.callback_query
+    
+    # Verify owner
+    if str(query.message.chat_id) != str(config.TELEGRAM_CHAT_ID):
+        await query.answer("⚠️ Unauthorized access.", show_alert=True)
+        return
+
+    if payload == "list":
+        await show_users_menu(query.message, edit=True)
+        await query.answer()
+        
+    elif payload == "add_prompt":
+        context.user_data['awaiting_usernames'] = True
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="manage:list")]
+        ])
+        await query.message.edit_text(
+            "✍️ <b>Add Twitter Account(s)</b>\n\n"
+            "Please send the Twitter username(s) you want to monitor.\n"
+            "You can specify multiple accounts separated by commas (e.g. <code>elonmusk, jack</code>).\n\n"
+            "<i>State: awaiting username input...</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        await query.answer()
+        
+    elif payload == "delete_list":
+        await show_delete_menu(query.message)
+        await query.answer()
+        
+    elif payload.startswith("delete_confirm:"):
+        user_to_delete = payload.split(":", 1)[1]
+        usernames = load_usernames()
+        if user_to_delete in usernames:
+            usernames.remove(user_to_delete)
+            save_usernames(usernames)
+            await query.answer(f"✅ Removed @{user_to_delete}", show_alert=False)
+            await show_delete_menu(query.message)
+        else:
+            await query.answer(f"❌ User @{user_to_delete} not found", show_alert=True)
+            await show_users_menu(query.message, edit=True)
+
+
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Command /users - displays the interactive management menu."""
+    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+        return
+    await show_users_menu(update.message, edit=False)
+
+
+async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Command /add <username1>, <username2> - adds new account(s)."""
+    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+        return
+        
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ <b>Usage:</b> <code>/add username1, username2</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    raw_input = " ".join(context.args)
+    added, skipped = process_add_usernames(raw_input)
+    
+    msg = f"<b>Account configuration update:</b>\n\n"
+    if added:
+        msg += f"✅ Added accounts: {', '.join('<b>@'+a+'</b>' for a in added)}\n"
+    if skipped:
+        msg += f"⚠️ Skipped (already exist): {', '.join('<b>@'+s+'</b>' for s in skipped)}\n"
+        
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    await show_users_menu(update.message, edit=False)
+
+
+async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Command /del <username> - removes an account."""
+    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+        return
+        
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ <b>Usage:</b> <code>/del username</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    user_to_delete = context.args[0].strip().lstrip("@").strip()
+    usernames = load_usernames()
+    
+    if user_to_delete in usernames:
+        usernames.remove(user_to_delete)
+        save_usernames(usernames)
+        await update.message.reply_text(f"✅ Removed <b>@{html_escape(user_to_delete)}</b> from monitoring.", parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(f"❌ Account <b>@{html_escape(user_to_delete)}</b> is not being monitored.", parse_mode=ParseMode.HTML)
+        
+    await show_users_menu(update.message, edit=False)
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Processes text messages from the owner, checking if we are waiting for usernames."""
+    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+        return
+        
+    if context.user_data.get('awaiting_usernames'):
+        context.user_data['awaiting_usernames'] = False
+        
+        raw_input = update.message.text
+        added, skipped = process_add_usernames(raw_input)
+        
+        msg = f"<b>Account configuration update:</b>\n\n"
+        if added:
+            msg += f"✅ Added accounts: {', '.join('<b>@'+a+'</b>' for a in added)}\n"
+        if skipped:
+            msg += f"⚠️ Skipped (already exist): {', '.join('<b>@'+s+'</b>' for s in skipped)}\n"
+        if not added and not skipped:
+            msg += "❌ No valid usernames found in your message."
+            
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await show_users_menu(update.message, edit=False)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles all callback queries from inline buttons (Like, Bookmark, Reply actions)."""
     query = update.callback_query
@@ -281,6 +629,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
     action, payload = data.split(":", 1)
     
+    if action == "manage":
+        await handle_manage_callback(update, context, payload)
+        return
+        
     if action == "like":
         tweet_id = payload
         await update_keyboard_loading(query.message, "like")
@@ -482,10 +834,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 async def main() -> None:
+    # Load initial usernames
+    initial_usernames = load_usernames()
+
     logger.info("=" * 60)
     logger.info("🤖 Twitter → Telegram Bot starting")
-    logger.info("   Accounts : %s", ", ".join(config.TWITTER_USERNAMES))
-    logger.info("   Interval : %d min", config.CHECK_INTERVAL_MINUTES)
+    logger.info("   Accounts : %s", ", ".join(initial_usernames))
+    logger.info("   Interval : %d min (total cycle for all accounts)", config.CHECK_INTERVAL_MINUTES)
+    logger.info("   Batches  : %d parts", config.NUM_BATCHES)
     logger.info("=" * 60)
 
     # Initialize Twitter Client
@@ -493,6 +849,12 @@ async def main() -> None:
 
     # Build Telegram Application
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+
+    # Register command and message handlers for account management
+    application.add_handler(CommandHandler("users", cmd_users))
+    application.add_handler(CommandHandler("add", cmd_add))
+    application.add_handler(CommandHandler("del", cmd_del))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     # Register callback query handler for inline button clicks
     application.add_handler(CallbackQueryHandler(handle_callback))
@@ -513,6 +875,9 @@ async def main() -> None:
     await application.start()
     await application.updater.start_polling()
 
+    # Start background daily cleanup task
+    cleanup_task = asyncio.create_task(daily_cleanup_task())
+
     # Graceful shutdown event
     stop_event = asyncio.Event()
 
@@ -532,10 +897,25 @@ async def main() -> None:
 
     # Monitoring loop
     while not stop_event.is_set():
-        try:
-            seen_ids = await check_new_tweets(application.bot, seen_ids)
-        except Exception as exc:
-            logger.exception("⚠️  Unexpected error in monitoring loop: %s", exc)
+        # Reload usernames list dynamically
+        usernames = load_usernames()
+        
+        if not usernames:
+            logger.warning("⚠️ No usernames configured for monitoring. Sleeping for %d min...", config.CHECK_INTERVAL_MINUTES)
+            interval_sec = config.CHECK_INTERVAL_MINUTES * 60
+        else:
+            # Get next batch of usernames
+            batch = batch_manager.get_next_batch(usernames)
+            logger.info("📡 Checking batch of %d user(s): %s", len(batch), ", ".join(batch))
+            
+            try:
+                seen_ids = await check_new_tweets(application.bot, seen_ids, batch)
+            except Exception as exc:
+                logger.exception("⚠️ Unexpected error in monitoring loop: %s", exc)
+                
+            # Calculate sleep interval based on current list size
+            interval_sec = batch_manager.calculate_sleep_interval(len(usernames), config.CHECK_INTERVAL_MINUTES)
+            logger.info("⏳ Sleeping for %.1f minutes (%.1f seconds) until next batch check...", interval_sec / 60, interval_sec)
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)
@@ -556,7 +936,8 @@ async def send_now(test_only: bool = False) -> None:
     --send-now : fetches the latest tweet and sends it to Telegram (ignores seen_ids).
     --test     : same but only prints to console without sending.
     """
-    username = config.TWITTER_USERNAMES[0]
+    usernames = load_usernames()
+    username = usernames[0] if usernames else "unknown"
     print(f"🔍 Fetching tweets for @{username}…")
     tweets = fetch_tweets(username=username, limit=config.INITIAL_FETCH_COUNT)
 

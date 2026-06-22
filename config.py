@@ -54,6 +54,9 @@ TELEGRAM_CHAT_ID: str = _require("TELEGRAM_CHAT_ID")
 # How often to check for new tweets, in minutes (min: 1, recommended: 5)
 CHECK_INTERVAL_MINUTES: int = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 
+# Number of batches to split the accounts into (default: 2)
+NUM_BATCHES: int = int(os.getenv("NUM_BATCHES", "2"))
+
 # Number of tweets to fetch on each check (also used on startup)
 INITIAL_FETCH_COUNT: int = int(os.getenv("INITIAL_FETCH_COUNT", "10"))
 
