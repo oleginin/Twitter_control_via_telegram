@@ -48,7 +48,11 @@ class TwitterClientWrapper:
         try:
             logger.info("Initializing X (Twitter) client (Proxy: %s)...", proxy)
             # Create the twikit Client
-            self.client = Client(language="en-US", proxy=proxy)
+            self.client = Client(
+                language="en-US",
+                proxy=proxy,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
             
             # Load cookies from file (synchronous method in twikit)
             self.client.load_cookies(str(COOKIES_FILE))
