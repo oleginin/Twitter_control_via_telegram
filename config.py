@@ -42,8 +42,22 @@ TWITTER_COOKIE_CT0: str = os.getenv("TWITTER_COOKIE_CT0", "").strip()
 # Proxy for X Client API requests
 TWITTER_PROXY: str = os.getenv("TWITTER_PROXY", "").strip()
 
-# Gemini AI API Key
+# Gemini AI API Key(s) - split by comma to support multiple keys for rotation
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEYS: list[str] = [k.strip() for k in GEMINI_API_KEY.split(",") if k.strip()]
+
+# ── AI Provider Configuration ──────────────────────────────────────────────────
+# Provider: 'gemini' (direct) or 'openai_compatible' (OpenRouter, Groq, Ollama, DeepSeek, etc.)
+AI_PROVIDER: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+
+# API Key for the selected provider (falls back to GEMINI_API_KEY)
+AI_API_KEY: str = os.getenv("AI_API_KEY", "").strip() or GEMINI_API_KEY
+
+# Endpoint URL for OpenAI-compatible providers
+AI_API_URL: str = os.getenv("AI_API_URL", "https://openrouter.ai/api/v1/chat/completions").strip()
+
+# Model name to use (e.g. google/gemini-2.5-flash:free or llama-3-8b-instruct:free)
+AI_MODEL: str = os.getenv("AI_MODEL", "google/gemini-2.5-flash:free").strip()
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -65,9 +79,9 @@ STATE_FILE = Path(__file__).parent / os.getenv("STATE_FILE", "seen_tweets.json")
 
 # ── Nitter instances (fallback list) ──────────────────────────────────────────
 NITTER_INSTANCES: list[str] = [
+    "https://nitter.net",
     "https://nitter.privacydev.net",
     "https://nitter.poast.org",
     "https://nitter.1d4.us",
     "https://nitter.kavin.rocks",
-    "https://nitter.net",
 ]

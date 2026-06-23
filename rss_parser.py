@@ -75,6 +75,11 @@ def _parse_entry(entry: feedparser.FeedParserDict, username: str) -> Optional[Tw
 
     # Text: prefer summary, fall back to title
     raw_text = getattr(entry, "summary", "") or getattr(entry, "title", "")
+    
+    # Nitter appends quote tweets at the end with a "[quote]" marker.
+    # We trim the text here so the bot only replies to the user's own words.
+    raw_text = re.split(r'(<a[^>]*>\[quote\]</a>|\[quote\])', raw_text, flags=re.IGNORECASE)[0]
+    
     text = _clean_html(raw_text)
 
     # Published time
@@ -83,7 +88,17 @@ def _parse_entry(entry: feedparser.FeedParserDict, username: str) -> Optional[Tw
     except Exception:
         published = datetime.utcnow()
 
-    is_retweet = text.startswith("RT @")
+    title = getattr(entry, "title", "").strip()
+    author = getattr(entry, "author", "").strip()
+    
+    # Nitter indicates retweets by setting the author to the original tweeter
+    # or by prefixing the title with "RT by @"
+    is_retweet = (
+        title.startswith("RT by @") or 
+        text.startswith("RT @") or 
+        text.startswith("RT by @") or
+        (author and author.lower() != f"@{username.lower()}")
+    )
     is_reply = text.startswith("@")
 
     return Tweet(
@@ -126,7 +141,7 @@ def fetch_tweets(
                 continue
 
             tweets: list[Tweet] = []
-            for entry in feed.entries[:limit]:
+            for entry in feed.entries:
                 tweet = _parse_entry(entry, username)
                 if tweet is None:
                     continue
@@ -135,6 +150,8 @@ def fetch_tweets(
                 if skip_replies and tweet.is_reply:
                     continue
                 tweets.append(tweet)
+                if len(tweets) >= limit:
+                    break
 
             logger.info("✅ Fetched %d tweet(s) from %s", len(tweets), instance)
             return tweets

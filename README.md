@@ -67,7 +67,11 @@ nano .env
 | `TWITTER_COOKIE_AUTH_TOKEN` | Your account session `auth_token` cookie from x.com |
 | `TWITTER_COOKIE_CT0` | Your account session `ct0` cookie from x.com |
 | `TWITTER_PROXY` | Proxy URL for X.com actions (e.g., `http://user:pass@ip:port`) |
-| `GEMINI_API_KEY` | Free API key from [Google AI Studio](https://aistudio.google.com/) |
+| `GEMINI_API_KEY` | API key for direct Google Gemini integration (legacy) |
+| `AI_PROVIDER` | AI provider type: `gemini` (default) or `openai_compatible` |
+| `AI_API_KEY` | API Key for the selected provider (falls back to `GEMINI_API_KEY`) |
+| `AI_API_URL` | API endpoint for OpenAI-compatible providers (default: OpenRouter) |
+| `AI_MODEL` | AI Model name (e.g., `google/gemini-2.5-flash:free`, `meta-llama/llama-3-8b-instruct:free`) |
 | `TELEGRAM_BOT_TOKEN` | Token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Telegram chat or channel ID to send updates |
 | `CHECK_INTERVAL_MINUTES` | Frequency of a full loop check across all accounts (default: `5` minutes) |

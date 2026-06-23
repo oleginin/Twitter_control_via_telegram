@@ -175,29 +175,19 @@ REPLY_DRAFTS = {}
 
 # ── Message formatting ────────────────────────────────────────────────────────
 def format_message(tweet: Tweet) -> str:
-    """Formats the Telegram notification message for a tweet."""
-    dt = tweet.published.astimezone(timezone.utc)
-    date_str = dt.strftime("%d.%m.%Y %H:%M UTC")
-
-    # Truncate long tweets (keep room for link and date)
+    """Formats a tweet for Telegram using HTML."""
+    from html import escape
+    date_str = tweet.published.strftime("%d.%m.%Y %H:%M UTC")
     text = tweet.text
     if len(text) > 800:
         text = text[:797] + "…"
-
-    # Escape special chars for MarkdownV2
-    def esc(s: str) -> str:
-        for ch in r"\_*[]()~`>#+-=|{}.!":
-            s = s.replace(ch, f"\\{ch}")
-        return s
-
     lines = [
-        f"👤 *{esc(tweet.username)}*",
-        "🐦 *New tweet\\!*",
-        "",
-        esc(text),
-        "",
-        f"🔗 [Open tweet]({tweet.url})",
-        f"📅 {esc(date_str)}",
+        f"👤 <b>{escape(tweet.username)}</b>",
+        "────────────────",
+        escape(text),
+        "────────────────",
+        f"🔗 <a href='{tweet.url}'>Відкрити оригінал</a>",
+        f"📅 <i>{escape(date_str)}</i>",
     ]
     return "\n".join(lines)
 
@@ -208,9 +198,29 @@ def get_tweet_keyboard(tweet_id: str) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("❤️ Like", callback_data=f"like:{tweet_id}"),
             InlineKeyboardButton("🔖 Bookmark", callback_data=f"bookmark:{tweet_id}"),
-            InlineKeyboardButton("💬 Reply", callback_data=f"reply_prompt:{tweet_id}"),
+        ],
+        [
+            InlineKeyboardButton("💬 Згенерувати відповідь (AI)", callback_data=f"reply_prompt:{tweet_id}"),
         ]
     ])
+
+
+# ── User Settings UI ──────────────────────────────────────────────────────────
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    usernames = load_usernames()
+    text = (
+        "📊 <b>Панель керування TwitterBot</b>\n\n"
+        f"👥 Відстежується акаунтів: {len(usernames)}\n"
+        f"🤖 AI Провайдер: {config.AI_PROVIDER.upper()}\n"
+        f"🔄 Інтервал: {config.CHECK_INTERVAL_MINUTES} хв\n\n"
+        "Оберіть дію:"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Керування юзерами", callback_data="manage_users")],
+    ])
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
 
 
 # ── Send notification ─────────────────────────────────────────────────────────
@@ -220,7 +230,7 @@ async def send_tweet_notification(bot: Bot, tweet: Tweet) -> bool:
         await bot.send_message(
             chat_id=config.TELEGRAM_CHAT_ID,
             text=format_message(tweet),
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
             disable_web_page_preview=False,  # show link preview card
             reply_markup=get_tweet_keyboard(tweet.id),
         )
@@ -244,7 +254,7 @@ async def check_new_tweets(bot: Bot, seen_ids: set[str], usernames: list[str]) -
         tweets = fetch_tweets(
             username=username,
             instances=config.NITTER_INSTANCES,
-            limit=config.INITIAL_FETCH_COUNT,
+            limit=max(20, config.INITIAL_FETCH_COUNT),
         )
 
         if not tweets:
@@ -291,9 +301,11 @@ async def check_new_tweets(bot: Bot, seen_ids: set[str], usernames: list[str]) -
 # ── Telegram Callback Handlers ────────────────────────────────────────────────
 def extract_tweet_text_from_message(message_text: str) -> str:
     """Extracts raw tweet text from Telegram message block."""
+    parts = message_text.split("────────────────\n")
+    if len(parts) >= 3:
+        return parts[1].strip()
     parts = message_text.split("\n\n")
     if len(parts) >= 3:
-        # Join middle parts in case the tweet itself contains double newlines
         return "\n\n".join(parts[1:-1]).strip()
     return message_text.strip()
 
@@ -360,7 +372,7 @@ async def update_keyboard_restore(message, action_type: str, tweet_id: str):
                 elif action_type == "bookmark":
                     new_row.append(InlineKeyboardButton("🔖 Bookmark", callback_data=f"bookmark:{tweet_id}"))
                 elif action_type == "reply":
-                    new_row.append(InlineKeyboardButton("💬 Reply", callback_data=f"reply_prompt:{tweet_id}"))
+                    new_row.append(InlineKeyboardButton("💬 Згенерувати відповідь (AI)", callback_data=f"reply_prompt:{tweet_id}"))
             else:
                 new_row.append(button)
         keyboard.append(new_row)
@@ -623,6 +635,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer("Action is currently in progress...", show_alert=False)
         return
         
+    if data == "manage_users":
+        await query.answer()
+        await show_users_menu(query.message)
+        return
+
     if ":" not in data:
         await query.answer()
         return
@@ -658,21 +675,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer(get_friendly_error_message(msg), show_alert=True)
             
     elif action == "reply_prompt":
+        tone = "base"
         tweet_id = payload
+        await query.answer()
         await update_keyboard_loading(query.message, "reply")
         
-        # 1. Send status message
-        draft_msg = await query.message.reply_text("🤖 Generating AI reply draft...")
-        
-        # 2. Extract tweet text from the telegram message
+        draft_msg = await query.message.reply_text(f"🤖 Генерую відповідь ({tone})...")
         tweet_text = extract_tweet_text_from_message(query.message.text)
-        
-        # 3. Call AI client to generate reply
-        reply_text = await generate_ai_reply(tweet_text)
+        reply_text = await generate_ai_reply(tweet_text, tone)
         
         # Restore Reply button
         await update_keyboard_restore(query.message, "reply", tweet_id)
-        await query.answer()
         
         if reply_text and not reply_text.startswith("❌"):
             # Save draft in memory
@@ -765,6 +778,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ]
         ])
         await query.message.edit_reply_markup(reply_markup=loading_keyboard)
+        await query.answer()
         
         tweet_text = draft.get("tweet_text")
         if not tweet_text:
@@ -787,7 +801,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ])
             await query.message.edit_reply_markup(reply_markup=restore_keyboard)
             await query.message.reply_text("❌ Error: Could not retrieve parent tweet text. Cancel and try again.")
-            await query.answer()
             return
             
         reply_text = await generate_ai_reply(tweet_text)
@@ -809,7 +822,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode=ParseMode.HTML,
                 reply_markup=restore_keyboard
             )
-            await query.answer("Draft regenerated! 🔄")
         else:
             error_msg = reply_text or "Could not generate reply text."
             # Restore draft keyboard on failure
@@ -823,7 +835,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ]
             ])
             await query.message.edit_reply_markup(reply_markup=restore_keyboard)
-            await query.answer(get_friendly_error_message(error_msg), show_alert=True)
+            await query.message.reply_text(f"❌ Failed to regenerate draft: {get_friendly_error_message(error_msg)}")
             
     elif action == "cancel_reply":
         draft_msg_id = int(payload)
@@ -852,6 +864,7 @@ async def main() -> None:
 
     # Register command and message handlers for account management
     application.add_handler(CommandHandler("users", cmd_users))
+    application.add_handler(CommandHandler("menu", cmd_menu))
     application.add_handler(CommandHandler("add", cmd_add))
     application.add_handler(CommandHandler("del", cmd_del))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
