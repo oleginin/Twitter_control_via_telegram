@@ -3,6 +3,7 @@ twitter_client.py — Wraps twikit client to perform X (Twitter) write actions u
 """
 import json
 import logging
+import asyncio
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -19,6 +20,13 @@ class TwitterClientWrapper:
     def __init__(self):
         self.client: Optional[Client] = None
         self.is_authenticated = False
+        self._lock: Optional[asyncio.Lock] = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def initialize(self) -> Tuple[bool, str]:
         """
@@ -69,77 +77,80 @@ class TwitterClientWrapper:
 
     async def like_tweet(self, tweet_id: str) -> Tuple[bool, str]:
         """Likes (favorites) a tweet by ID. Returns (success, message)."""
-        if not self.is_authenticated or self.client is None:
-            # Try to re-initialize in case .env was updated
-            success, msg = self.initialize()
-            if not success:
-                return False, f"Not authenticated: {msg}"
+        async with self.lock:
+            if not self.is_authenticated or self.client is None:
+                # Try to re-initialize in case .env was updated
+                success, msg = self.initialize()
+                if not success:
+                    return False, f"Not authenticated: {msg}"
 
-        try:
-            logger.info("Liking tweet %s...", tweet_id)
-            await self.client.favorite_tweet(tweet_id)
-            logger.info("✅ Successfully liked tweet %s", tweet_id)
-            return True, "Liked"
-        except Exception as exc:
-            logger.warning("Failed to like tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
             try:
-                self.client.client_transaction.home_page_response = None
+                logger.info("Liking tweet %s...", tweet_id)
                 await self.client.favorite_tweet(tweet_id)
-                logger.info("✅ Successfully liked tweet %s after transaction reset", tweet_id)
+                logger.info("✅ Successfully liked tweet %s", tweet_id)
                 return True, "Liked"
-            except Exception as retry_exc:
-                msg = f"Failed to like tweet: {retry_exc}"
-                logger.error(msg)
-                return False, msg
+            except Exception as exc:
+                logger.warning("Failed to like tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+                try:
+                    self.client.client_transaction.home_page_response = None
+                    await self.client.favorite_tweet(tweet_id)
+                    logger.info("✅ Successfully liked tweet %s after transaction reset", tweet_id)
+                    return True, "Liked"
+                except Exception as retry_exc:
+                    msg = f"Failed to like tweet: {retry_exc}"
+                    logger.error(msg)
+                    return False, msg
 
     async def bookmark_tweet(self, tweet_id: str) -> Tuple[bool, str]:
         """Bookmarks a tweet by ID. Returns (success, message)."""
-        if not self.is_authenticated or self.client is None:
-            success, msg = self.initialize()
-            if not success:
-                return False, f"Not authenticated: {msg}"
+        async with self.lock:
+            if not self.is_authenticated or self.client is None:
+                success, msg = self.initialize()
+                if not success:
+                    return False, f"Not authenticated: {msg}"
 
-        try:
-            logger.info("Bookmarking tweet %s...", tweet_id)
-            await self.client.bookmark_tweet(tweet_id)
-            logger.info("✅ Successfully bookmarked tweet %s", tweet_id)
-            return True, "Bookmarked"
-        except Exception as exc:
-            logger.warning("Failed to bookmark tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
             try:
-                self.client.client_transaction.home_page_response = None
+                logger.info("Bookmarking tweet %s...", tweet_id)
                 await self.client.bookmark_tweet(tweet_id)
-                logger.info("✅ Successfully bookmarked tweet %s after transaction reset", tweet_id)
+                logger.info("✅ Successfully bookmarked tweet %s", tweet_id)
                 return True, "Bookmarked"
-            except Exception as retry_exc:
-                msg = f"Failed to bookmark tweet: {retry_exc}"
-                logger.error(msg)
-                return False, msg
+            except Exception as exc:
+                logger.warning("Failed to bookmark tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+                try:
+                    self.client.client_transaction.home_page_response = None
+                    await self.client.bookmark_tweet(tweet_id)
+                    logger.info("✅ Successfully bookmarked tweet %s after transaction reset", tweet_id)
+                    return True, "Bookmarked"
+                except Exception as retry_exc:
+                    msg = f"Failed to bookmark tweet: {retry_exc}"
+                    logger.error(msg)
+                    return False, msg
 
     async def reply_tweet(self, tweet_id: str, text: str) -> Tuple[bool, str]:
         """Replies to a tweet with comment text. Returns (success, message)."""
-        if not self.is_authenticated or self.client is None:
-            success, msg = self.initialize()
-            if not success:
-                return False, f"Not authenticated: {msg}"
+        async with self.lock:
+            if not self.is_authenticated or self.client is None:
+                success, msg = self.initialize()
+                if not success:
+                    return False, f"Not authenticated: {msg}"
 
-        try:
-            logger.info("Replying to tweet %s: %s...", tweet_id, text[:50])
-            # create_tweet uses reply_to for replies
-            await self.client.create_tweet(text=text, reply_to=tweet_id)
-            logger.info("✅ Successfully replied to tweet %s", tweet_id)
-            return True, "Replied"
-        except Exception as exc:
-            logger.warning("Failed to reply to tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
             try:
-                self.client.client_transaction.home_page_response = None
+                logger.info("Replying to tweet %s: %s...", tweet_id, text[:50])
+                # create_tweet uses reply_to for replies
                 await self.client.create_tweet(text=text, reply_to=tweet_id)
-                logger.info("✅ Successfully replied to tweet %s after transaction reset", tweet_id)
+                logger.info("✅ Successfully replied to tweet %s", tweet_id)
                 return True, "Replied"
-            except Exception as retry_exc:
-                msg = f"Failed to reply to tweet: {retry_exc}"
-                logger.error(msg)
-                return False, msg
+            except Exception as exc:
+                logger.warning("Failed to reply to tweet %s: %s. Resetting transaction and retrying...", tweet_id, exc)
+                try:
+                    self.client.client_transaction.home_page_response = None
+                    await self.client.create_tweet(text=text, reply_to=tweet_id)
+                    logger.info("✅ Successfully replied to tweet %s after transaction reset", tweet_id)
+                    return True, "Replied"
+                except Exception as retry_exc:
+                    msg = f"Failed to reply to tweet: {retry_exc}"
+                    logger.error(msg)
+                    return False, msg
 
 
 # Singleton instance
