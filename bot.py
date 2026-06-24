@@ -186,7 +186,7 @@ def format_message(tweet: Tweet) -> str:
         "────────────────",
         escape(text),
         "────────────────",
-        f"🔗 <a href='{tweet.url}'>Відкрити оригінал</a>",
+        f"🔗 <a href='{tweet.url}'>Open tweet</a>",
         f"📅 <i>{escape(date_str)}</i>",
     ]
     return "\n".join(lines)
@@ -200,7 +200,7 @@ def get_tweet_keyboard(tweet_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔖 Bookmark", callback_data=f"bookmark:{tweet_id}"),
         ],
         [
-            InlineKeyboardButton("💬 Згенерувати відповідь (AI)", callback_data=f"reply_prompt:{tweet_id}"),
+            InlineKeyboardButton("💬 Reply", callback_data=f"reply_prompt:{tweet_id}"),
         ]
     ])
 
@@ -209,14 +209,14 @@ def get_tweet_keyboard(tweet_id: str) -> InlineKeyboardMarkup:
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     usernames = load_usernames()
     text = (
-        "📊 <b>Панель керування TwitterBot</b>\n\n"
-        f"👥 Відстежується акаунтів: {len(usernames)}\n"
-        f"🤖 AI Провайдер: {config.AI_PROVIDER.upper()}\n"
-        f"🔄 Інтервал: {config.CHECK_INTERVAL_MINUTES} хв\n\n"
-        "Оберіть дію:"
+        "📊 <b>TwitterBot Dashboard</b>\n\n"
+        f"👥 Tracked accounts: {len(usernames)}\n"
+        f"🤖 AI Provider: {config.AI_PROVIDER.upper()}\n"
+        f"🔄 Interval: {config.CHECK_INTERVAL_MINUTES} min\n\n"
+        "Select an action:"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Керування юзерами", callback_data="manage_users")],
+        [InlineKeyboardButton("👥 Manage Users", callback_data="manage_users")],
     ])
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
@@ -372,7 +372,7 @@ async def update_keyboard_restore(message, action_type: str, tweet_id: str):
                 elif action_type == "bookmark":
                     new_row.append(InlineKeyboardButton("🔖 Bookmark", callback_data=f"bookmark:{tweet_id}"))
                 elif action_type == "reply":
-                    new_row.append(InlineKeyboardButton("💬 Згенерувати відповідь (AI)", callback_data=f"reply_prompt:{tweet_id}"))
+                    new_row.append(InlineKeyboardButton("💬 Reply", callback_data=f"reply_prompt:{tweet_id}"))
             else:
                 new_row.append(button)
         keyboard.append(new_row)
@@ -680,7 +680,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         await update_keyboard_loading(query.message, "reply")
         
-        draft_msg = await query.message.reply_text(f"🤖 Генерую відповідь ({tone})...")
+        draft_msg = await query.message.reply_text("🤖 Generating AI reply draft...")
         tweet_text = extract_tweet_text_from_message(query.message.text)
         reply_text = await generate_ai_reply(tweet_text, tone)
         
