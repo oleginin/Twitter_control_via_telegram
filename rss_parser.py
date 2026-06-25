@@ -28,6 +28,7 @@ class Tweet:
     published: datetime
     is_retweet: bool
     is_reply: bool
+    is_quote: bool
     username: str       # twitter profile username
 
 
@@ -76,9 +77,12 @@ def _parse_entry(entry: feedparser.FeedParserDict, username: str) -> Optional[Tw
     # Text: prefer summary, fall back to title
     raw_text = getattr(entry, "summary", "") or getattr(entry, "title", "")
     
-    # Nitter appends quote tweets at the end with a "[quote]" marker.
-    # We trim the text here so the bot only replies to the user's own words.
-    raw_text = re.split(r'(<a[^>]*>\[quote\]</a>|\[quote\])', raw_text, flags=re.IGNORECASE)[0]
+    # Check if it's a quote tweet before trimming
+    is_quote = bool(re.search(r'(<a[^>]*>\[quote\]</a>|\[quote\]|<div[^>]*class=["\']quote["\'][^>]*>)', raw_text, flags=re.IGNORECASE))
+    
+    # Nitter appends quote tweets at the end, usually marked by [quote] or a <div class="quote">.
+    # We trim the text here so the bot only sees the user's own words, ignoring the quoted text.
+    raw_text = re.split(r'(<a[^>]*>\[quote\]</a>|\[quote\]|<div[^>]*class=["\']quote["\'][^>]*>)', raw_text, flags=re.IGNORECASE)[0]
     
     text = _clean_html(raw_text)
 
@@ -108,6 +112,7 @@ def _parse_entry(entry: feedparser.FeedParserDict, username: str) -> Optional[Tw
         published=published,
         is_retweet=is_retweet,
         is_reply=is_reply,
+        is_quote=is_quote,
         username=username,
     )
 
@@ -117,7 +122,8 @@ def fetch_tweets(
     instances: list[str] = NITTER_INSTANCES,
     limit: int = 20,
     skip_retweets: bool = True,
-    skip_replies: bool = False,
+    skip_replies: bool = True,
+    skip_quotes: bool = False,
 ) -> list[Tweet]:
     """
     Fetches the latest tweets via RSS.
@@ -148,6 +154,8 @@ def fetch_tweets(
                 if skip_retweets and tweet.is_retweet:
                     continue
                 if skip_replies and tweet.is_reply:
+                    continue
+                if skip_quotes and tweet.is_quote:
                     continue
                 tweets.append(tweet)
                 if len(tweets) >= limit:
